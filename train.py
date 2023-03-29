@@ -14,7 +14,11 @@ import datetime
 from dataLoader import dataset_dict
 import sys
 
+import clip
 
+from PIL import Image
+
+clip_model, clip_preprocess = clip.load("ViT-B/32", device="cuda")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -35,6 +39,39 @@ class SimpleSampler:
             self.curr = 0
         return self.ids[self.curr:self.curr+self.batch]
 
+
+class SimpleSamplerPerImage:
+    def __init__(self, total, batch):
+        self.total = total
+        self.batch = batch
+        self.curr = total
+        self.ids = None
+        self.image_rays = 640000
+        self.image_batches = self.image_rays // self.batch
+        self.remainder = self.image_rays % self.batch
+        self.batch_count = 0
+        self.next = self.total
+
+        print(f'batch size: {self.batch}, image rays: {self.image_rays}, image batches: {self.image_batches}, remainder: {self.remainder}')
+    
+    def nextids(self):
+        self.curr = self.next
+
+        if self.curr + self.batch > self.total:
+            self.ids = torch.LongTensor(torch.arange(self.total))
+            self.curr = 0
+            self.next = 0
+
+        img_complete = False
+        if self.batch_count >= self.image_batches:
+            self.batch_count = 0
+            self.next = self.curr+self.remainder
+            img_complete = True
+        else:
+            self.next=self.curr+self.batch
+            self.batch_count += 1
+        
+        return self.ids[self.curr:self.next], img_complete
 
 @torch.no_grad()
 def export_mesh(args):
@@ -160,7 +197,7 @@ def reconstruction(args):
     allrays, allrgbs = train_dataset.all_rays, train_dataset.all_rgbs
     if not args.ndc_ray:
         allrays, allrgbs = tensorf.filtering_rays(allrays, allrgbs, bbox_only=True)
-    trainingSampler = SimpleSampler(allrays.shape[0], args.batch_size)
+    trainingSampler = SimpleSamplerPerImage(allrays.shape[0], args.batch_size)
 
     Ortho_reg_weight = args.Ortho_weight
     print("initial Ortho_reg_weight", Ortho_reg_weight)
@@ -173,10 +210,10 @@ def reconstruction(args):
 
 
     pbar = tqdm(range(args.n_iters), miniters=args.progress_refresh_rate, file=sys.stdout)
+    rgb_accumulator = []
     for iteration in pbar:
 
-
-        ray_idx = trainingSampler.nextids()
+        ray_idx, img_complete = trainingSampler.nextids()
         rays_train, rgb_train = allrays[ray_idx], allrgbs[ray_idx].to(device)
 
         #rgb_map, alphas_map, depth_map, weights, uncertainty
@@ -185,6 +222,26 @@ def reconstruction(args):
 
         loss = torch.mean((rgb_map - rgb_train) ** 2)
 
+        rgb_map_copy = rgb_map.clone().detach().cpu()
+        rgb_map_copy = rgb_map_copy.clamp(0.0, 1.0)
+        rgb_accumulator.append(rgb_map_copy)
+        #print("rgb_map_copy: ", rgb_map_copy.shape)
+        #print("rgb_accumulator: ", len(rgb_accumulator))
+
+        if img_complete:
+            W, H = 800, 800
+            rgb_map_dev = torch.cat(rgb_accumulator, dim=0)
+
+            rgb_map_dev = rgb_map_dev.reshape(H, W, 3)
+            rgb_map_dev = (rgb_map_dev.numpy() * 255).astype('uint8')
+            imageio.imwrite(f'test.png', rgb_map_dev)
+
+            image = clip_preprocess(Image.open("test.png")).unsqueeze(0).to(device)
+            with torch.no_grad():
+                image_features = clip_model.encode_image(image)
+                print("image_features: ", image_features.shape)
+            
+            rgb_accumulator = []
 
         # loss
         total_loss = loss
@@ -314,5 +371,6 @@ if __name__ == '__main__':
     if args.render_only and (args.render_test or args.render_path):
         render_test(args)
     else:
+        # Start here
         reconstruction(args)
 
