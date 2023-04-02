@@ -1,6 +1,7 @@
 
 import os
 from tqdm.auto import tqdm
+from dataLoader.ray_utils import get_ray_directions, get_rays
 from opt import config_parser
 
 
@@ -72,6 +73,24 @@ class SimpleSamplerPerImage:
             self.batch_count += 1
         
         return self.ids[self.curr:self.next], img_complete
+
+
+def sample_new_pose_rays(focal=1111.1110311937682, h=800, w=800):
+    # sample a new pose
+    #c2w = torch.eye(4, device=device)
+    #c2w[:3, 3] = torch.FloatTensor([random.uniform(-2, 2), random.uniform(-2, 2), random.uniform(4, 6)]).to(device)
+    #c2w[:3, :3] = torch.FloatTensor(cv2.Rodrigues(np.array([random.uniform(-np.pi, np.pi), random.uniform(-np.pi, np.pi), random.uniform(-np.pi, np.pi)]))[0]).to(device)
+    c2w = torch.tensor([[-0.5147, -0.4223,  0.7462, -3.0080],
+        [-0.8574,  0.2535, -0.4479,  1.8057],
+        [ 0.0000, -0.8703, -0.4925,  1.9853],
+        [ 0.0000,  0.0000,  0.0000,  1.0000]]).to(device)
+    # sample rays
+    directions = get_ray_directions(h, w, [focal,focal])  # (h, w, 3)
+    directions = directions / torch.norm(directions, dim=-1, keepdim=True)
+    rays_o, rays_d = get_rays(directions.to(device), c2w)
+
+    return torch.cat([rays_o, rays_d], 1)
+
 
 @torch.no_grad()
 def export_mesh(args):
@@ -197,7 +216,7 @@ def reconstruction(args):
     allrays, allrgbs = train_dataset.all_rays, train_dataset.all_rgbs
     if not args.ndc_ray:
         allrays, allrgbs = tensorf.filtering_rays(allrays, allrgbs, bbox_only=True)
-    trainingSampler = SimpleSamplerPerImage(allrays.shape[0], args.batch_size)
+    trainingSampler = SimpleSampler(allrays.shape[0], args.batch_size)
 
     Ortho_reg_weight = args.Ortho_weight
     print("initial Ortho_reg_weight", Ortho_reg_weight)
@@ -213,7 +232,7 @@ def reconstruction(args):
     rgb_accumulator = []
     for iteration in pbar:
 
-        ray_idx, img_complete = trainingSampler.nextids()
+        ray_idx = trainingSampler.nextids()
         rays_train, rgb_train = allrays[ray_idx], allrgbs[ray_idx].to(device)
 
         #rgb_map, alphas_map, depth_map, weights, uncertainty
@@ -221,27 +240,6 @@ def reconstruction(args):
                                 N_samples=nSamples, white_bg = white_bg, ndc_ray=ndc_ray, device=device, is_train=True)
 
         loss = torch.mean((rgb_map - rgb_train) ** 2)
-
-        rgb_map_copy = rgb_map.clone().detach().cpu()
-        rgb_map_copy = rgb_map_copy.clamp(0.0, 1.0)
-        rgb_accumulator.append(rgb_map_copy)
-        #print("rgb_map_copy: ", rgb_map_copy.shape)
-        #print("rgb_accumulator: ", len(rgb_accumulator))
-
-        if img_complete:
-            W, H = 800, 800
-            rgb_map_dev = torch.cat(rgb_accumulator, dim=0)
-
-            rgb_map_dev = rgb_map_dev.reshape(H, W, 3)
-            rgb_map_dev = (rgb_map_dev.numpy() * 255).astype('uint8')
-            imageio.imwrite(f'test.png', rgb_map_dev)
-
-            image = clip_preprocess(Image.open("test.png")).unsqueeze(0).to(device)
-            with torch.no_grad():
-                image_features = clip_model.encode_image(image)
-                print("image_features: ", image_features.shape)
-            
-            rgb_accumulator = []
 
         # loss
         total_loss = loss
@@ -268,6 +266,26 @@ def reconstruction(args):
         optimizer.zero_grad()
         total_loss.backward()
         optimizer.step()
+
+        # Part 2: loss on samples
+        W, H = 800, 800
+        rays_sample = sample_new_pose_rays()
+
+        print("N_samples", nSamples, "white_bg", white_bg, "ndc_ray", ndc_ray)
+        rgb_map_dev, alphas_map, depth_map, weights, uncertainty = renderer(rays_sample, tensorf, chunk=args.batch_size,
+                                N_samples=-1, white_bg = white_bg, ndc_ray=ndc_ray, device=device, is_train=True)
+        
+        rgb_map_dev = rgb_map_dev.clone().detach().cpu()
+        rgb_map_dev = rgb_map_dev.clamp(0.0, 1.0)
+        rgb_map_dev = rgb_map_dev.reshape(H, W, 3)
+        rgb_map_dev = (rgb_map_dev.numpy() * 255).astype('uint8')
+        imageio.imwrite(f'test.png', rgb_map_dev)
+
+        image = clip_preprocess(Image.open("test.png")).unsqueeze(0).to(device)
+        with torch.no_grad():
+            image_features = clip_model.encode_image(image)
+            print("image_features: ", image_features.shape)
+
 
         loss = loss.detach().item()
         
