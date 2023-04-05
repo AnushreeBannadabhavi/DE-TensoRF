@@ -5,9 +5,13 @@ from tqdm import tqdm
 import os
 from PIL import Image
 from torchvision import transforms as T
+import random
+import clip
 
 
 from .ray_utils import *
+
+clip_model, clip_preprocess = clip.load("ViT-B/32", device="cuda")
 
 
 class BlenderDataset(Dataset):
@@ -45,8 +49,13 @@ class BlenderDataset(Dataset):
         self.focal = 0.5 * 800 / np.tan(0.5 * self.meta['camera_angle_x'])  # original focal length
         self.focal *= self.img_wh[0] / 800  # modify focal length to match size self.img_wh
 
+        # random sample a subset of images
+        subset_len = 30
+        self.meta['frames'] = random.sample(self.meta['frames'], subset_len)
+        #self.meta['frames'] = self.meta['frames'][:subset_len]
 
-        # ray directions for all pixels, same for all images (same H, W, focal)
+
+        # ray directions for all pixels, same for all images (same H, W, focal) # TODO: why is this the same for all images?
         self.directions = get_ray_directions(h, w, [self.focal,self.focal])  # (h, w, 3)
         self.directions = self.directions / torch.norm(self.directions, dim=-1, keepdim=True)
         self.intrinsics = torch.tensor([[self.focal,0,w/2],[0,self.focal,h/2],[0,0,1]]).float()
@@ -58,30 +67,40 @@ class BlenderDataset(Dataset):
         self.all_masks = []
         self.all_depth = []
         self.downsample=1.0
+        self.all_img_features = []
 
         img_eval_interval = 1 if self.N_vis < 0 else len(self.meta['frames']) // self.N_vis
         idxs = list(range(0, len(self.meta['frames']), img_eval_interval))
         for i in tqdm(idxs, desc=f'Loading data {self.split} ({len(idxs)})'):#img_list:#
 
             frame = self.meta['frames'][i]
+
+            # Read transfomation matrix, convert to opencv -> torch, then add to the list of poses
             pose = np.array(frame['transform_matrix']) @ self.blender2opencv
             c2w = torch.FloatTensor(pose)
             self.poses += [c2w]
 
+            # load image path into openCV -> downsample -> convert to torch -> convert to RGB format -> add to list of images
             image_path = os.path.join(self.root_dir, f"{frame['file_path']}.png")
             self.image_paths += [image_path]
             img = Image.open(image_path)
+
+            img_ft = clip_preprocess(img).unsqueeze(0).to('cuda')
+            with torch.no_grad():
+                image_features = clip_model.encode_image(img_ft)
+                self.all_img_features += [image_features]
+                        
             
             if self.downsample!=1.0:
                 img = img.resize(self.img_wh, Image.LANCZOS)
-            img = self.transform(img)  # (4, h, w)
+            img = self.transform(img)  # (4, h, w) # (4, 800, 800)
             img = img.view(4, -1).permute(1, 0)  # (h*w, 4) RGBA
-            img = img[:, :3] * img[:, -1:] + (1 - img[:, -1:])  # blend A to RGB
+            img = img[:, :3] * img[:, -1:] + (1 - img[:, -1:])  # blend A to RGB (h*w, 3)
             self.all_rgbs += [img]
 
-
+            # use pose matrix to get ray origins and directions #TODO: is this correct? What is happening in this step exactly?
             rays_o, rays_d = get_rays(self.directions, c2w)  # both (h*w, 3)
-            self.all_rays += [torch.cat([rays_o, rays_d], 1)]  # (h*w, 6)
+            self.all_rays += [torch.cat([rays_o, rays_d], 1)]  # (h*w, 6) #TODO: so we have 1 ray, source to destination, for each pixel in the image?
 
 
         self.poses = torch.stack(self.poses)

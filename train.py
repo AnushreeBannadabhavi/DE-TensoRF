@@ -16,10 +16,17 @@ from dataLoader import dataset_dict
 import sys
 
 import clip
-
 from PIL import Image
+from torchvision.transforms import Resize, Normalize
+try:
+    from torchvision.transforms import InterpolationMode
+    BICUBIC = InterpolationMode.BICUBIC
+except ImportError:
+    BICUBIC = Image.BICUBIC
 
 clip_model, clip_preprocess = clip.load("ViT-B/32", device="cuda")
+for param in clip_model.parameters():
+    param.requires_grad = False
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -75,19 +82,20 @@ class SimpleSamplerPerImage:
         return self.ids[self.curr:self.next], img_complete
 
 
-def sample_new_pose_rays(focal=1111.1110311937682, h=800, w=800):
-    # sample a new pose
-    #c2w = torch.eye(4, device=device)
-    #c2w[:3, 3] = torch.FloatTensor([random.uniform(-2, 2), random.uniform(-2, 2), random.uniform(4, 6)]).to(device)
-    #c2w[:3, :3] = torch.FloatTensor(cv2.Rodrigues(np.array([random.uniform(-np.pi, np.pi), random.uniform(-np.pi, np.pi), random.uniform(-np.pi, np.pi)]))[0]).to(device)
-    c2w = torch.tensor([[-0.5147, -0.4223,  0.7462, -3.0080],
-        [-0.8574,  0.2535, -0.4479,  1.8057],
-        [ 0.0000, -0.8703, -0.4925,  1.9853],
-        [ 0.0000,  0.0000,  0.0000,  1.0000]]).to(device)
+def sample_new_pose_rays(cam_angle_x, c2w, h, w):
+
+    focal = 0.5 * 64 / np.tan(0.5 * cam_angle_x)  # original focal length
+    focal *= 64 / 64  # modify focal length to match size self.img_wh
+
+    # c2w = torch.tensor([[-0.5147, -0.4223,  0.7462, -3.0080],
+    #     [-0.8574,  0.2535, -0.4479,  1.8057],
+    #     [ 0.0000, -0.8703, -0.4925,  1.9853],
+    #     [ 0.0000,  0.0000,  0.0000,  1.0000]]).to(device)
+
     # sample rays
     directions = get_ray_directions(h, w, [focal,focal])  # (h, w, 3)
     directions = directions / torch.norm(directions, dim=-1, keepdim=True)
-    rays_o, rays_d = get_rays(directions.to(device), c2w)
+    rays_o, rays_d = get_rays(directions.to(device), c2w.to(device))
 
     return torch.cat([rays_o, rays_d], 1)
 
@@ -213,7 +221,7 @@ def reconstruction(args):
     torch.cuda.empty_cache()
     PSNRs,PSNRs_test = [],[0]
 
-    allrays, allrgbs = train_dataset.all_rays, train_dataset.all_rgbs
+    allrays, allrgbs, allimgfeatures, poses = train_dataset.all_rays, train_dataset.all_rgbs, train_dataset.all_img_features, train_dataset.poses
     if not args.ndc_ray:
         allrays, allrgbs = tensorf.filtering_rays(allrays, allrgbs, bbox_only=True)
     trainingSampler = SimpleSampler(allrays.shape[0], args.batch_size)
@@ -235,14 +243,14 @@ def reconstruction(args):
         ray_idx = trainingSampler.nextids()
         rays_train, rgb_train = allrays[ray_idx], allrgbs[ray_idx].to(device)
 
-        #rgb_map, alphas_map, depth_map, weights, uncertainty
+        #Part 1: normal MSE loss
         rgb_map, alphas_map, depth_map, weights, uncertainty = renderer(rays_train, tensorf, chunk=args.batch_size,
                                 N_samples=nSamples, white_bg = white_bg, ndc_ray=ndc_ray, device=device, is_train=True)
 
         loss = torch.mean((rgb_map - rgb_train) ** 2)
 
         # loss
-        total_loss = loss
+        total_loss = loss #+cos_dist_loss
         if Ortho_reg_weight > 0:
             loss_reg = tensorf.vector_comp_diffs()
             total_loss += Ortho_reg_weight*loss_reg
@@ -267,25 +275,39 @@ def reconstruction(args):
         total_loss.backward()
         optimizer.step()
 
-        # Part 2: loss on samples
-        W, H = 800, 800
-        rays_sample = sample_new_pose_rays()
+        #Part 2: semantic loss
+        if iteration > 1000 and iteration % 100 == 0:
+            W, H = 64, 64
+            rays_sample = sample_new_pose_rays(cam_angle_x=0.6911112070083618, c2w=random.choice(poses), h=H, w=W)
 
-        print("N_samples", nSamples, "white_bg", white_bg, "ndc_ray", ndc_ray)
-        rgb_map_dev, alphas_map, depth_map, weights, uncertainty = renderer(rays_sample, tensorf, chunk=args.batch_size,
-                                N_samples=-1, white_bg = white_bg, ndc_ray=ndc_ray, device=device, is_train=True)
-        
-        rgb_map_dev = rgb_map_dev.clone().detach().cpu()
-        rgb_map_dev = rgb_map_dev.clamp(0.0, 1.0)
-        rgb_map_dev = rgb_map_dev.reshape(H, W, 3)
-        rgb_map_dev = (rgb_map_dev.numpy() * 255).astype('uint8')
-        imageio.imwrite(f'test.png', rgb_map_dev)
+            rgb_map_dev, alphas_map, depth_map, weights, uncertainty = renderer(rays_sample, tensorf, chunk=args.batch_size,
+                                    N_samples=-1, white_bg = white_bg, ndc_ray=ndc_ray, device=device, is_train=True)
 
-        image = clip_preprocess(Image.open("test.png")).unsqueeze(0).to(device)
-        with torch.no_grad():
+
+            rgb_map_dev = rgb_map_dev.clamp(0.0, 1.0)
+            rgb_map_dev = rgb_map_dev.reshape(H, W, 3)
+
+            image = rgb_map_dev.permute(2, 0, 1).unsqueeze(0)
+            image = Resize((224, 224), interpolation=BICUBIC)(image)
+            image = Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711))(image)
+
             image_features = clip_model.encode_image(image)
-            print("image_features: ", image_features.shape)
 
+            # Sample a GT image feature
+            sampled_image_feature = random.choice(allimgfeatures)
+
+            # get cosine distance between the sampled image feature and the image feature of the rendered image
+            cos_dist = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
+            sem_loss = -cos_dist(image_features, sampled_image_feature)
+
+            # Save intermediate results for reference
+            rgb_map_dev = rgb_map_dev.clone().detach().cpu()
+            rgb_map_dev = (rgb_map_dev.numpy() * 255).astype('uint8')
+            imageio.imwrite(f'test.png', rgb_map_dev)
+
+            optimizer.zero_grad()
+            sem_loss.backward()
+            optimizer.step()
 
         loss = loss.detach().item()
         
