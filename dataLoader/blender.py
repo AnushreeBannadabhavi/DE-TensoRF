@@ -5,14 +5,37 @@ from tqdm import tqdm
 import os
 from PIL import Image
 from torchvision import transforms as T
+from scipy.spatial.transform import Rotation
 import random
 import clip
+import numpy as np
 
 
 from .ray_utils import *
 
 clip_model, clip_preprocess = clip.load("ViT-B/32", device="cuda")
 
+def get_symmetric_pose(pose):
+    pose_r = pose[:3,:3]
+    pose_t = pose[:3,3]
+
+    # Transform the matrix to euler angles
+    r =  Rotation.from_matrix(pose_r)
+    angles = r.as_euler("xyz",degrees=True)
+    # Modify the angle
+    angles[2] = angles[2] * -1
+
+    # Transform the angle back to matrix
+    new_r = Rotation.from_euler("xyz",angles,degrees=True)
+    pose_r = new_r.as_matrix()
+
+    # Modify the translation
+    pose_t[0] = pose_t[0] * -1
+
+    # Modify the pose
+    pose[:3,:3] = pose_r
+    pose[:3,3] = pose_t
+    return pose
 
 class BlenderDataset(Dataset):
     def __init__(self, datadir, split='train', downsample=1.0, is_stack=False, N_vis=-1):
@@ -50,8 +73,8 @@ class BlenderDataset(Dataset):
         self.focal *= self.img_wh[0] / 800  # modify focal length to match size self.img_wh
 
         # random sample a subset of images
-        subset_len = 30
-        self.meta['frames'] = random.sample(self.meta['frames'], subset_len)
+        #subset_len = 30
+        #self.meta['frames'] = random.sample(self.meta['frames'], subset_len)
         #self.meta['frames'] = self.meta['frames'][:subset_len]
 
 
@@ -74,8 +97,28 @@ class BlenderDataset(Dataset):
         for i in tqdm(idxs, desc=f'Loading data {self.split} ({len(idxs)})'):#img_list:#
 
             frame = self.meta['frames'][i]
+            if self.split == 'train':
+                pose_blender = np.array(frame['transform_matrix'])
+                pose_symm = get_symmetric_pose(pose_blender)
+                pose = pose_symm @ self.blender2opencv
+                c2w = torch.FloatTensor(pose)
+                self.poses += [c2w]
 
-            # Read transfomation matrix, convert to opencv -> torch, then add to the list of poses
+                image_path = os.path.join(self.root_dir, f"{frame['file_path']}.png")
+                img = Image.open(image_path)
+                # flip image horizontally
+                img = img.transpose(Image.FLIP_LEFT_RIGHT)
+                if self.downsample!=1.0:
+                    img = img.resize(self.img_wh, Image.LANCZOS)
+                img = self.transform(img)  # (4, h, w) - (4,800,800)
+                img = img.view(4, -1).permute(1, 0)  # (h*w, 4) RGBA - (640000,4)
+                img = img[:, :3] * img[:, -1:] + (1 - img[:, -1:])  # blend A to RGB - (640000,3)
+                self.all_rgbs += [img]
+
+                rays_o, rays_d = get_rays(self.directions, c2w)  # both (h*w, 3)
+                self.all_rays += [torch.cat([rays_o, rays_d], 1)]  # (h*w, 6)
+               
+	    # Read transfomation matrix, convert to opencv -> torch, then add to the list of poses 
             pose = np.array(frame['transform_matrix']) @ self.blender2opencv
             c2w = torch.FloatTensor(pose)
             self.poses += [c2w]
