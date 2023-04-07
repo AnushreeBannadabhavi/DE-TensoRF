@@ -3,7 +3,7 @@ import os
 from tqdm.auto import tqdm
 from dataLoader.ray_utils import get_ray_directions, get_rays
 from opt import config_parser
-
+import wandb
 
 
 import json, random
@@ -154,7 +154,7 @@ def reconstruction(args):
 
     # init dataset
     dataset = dataset_dict[args.dataset_name]
-    train_dataset = dataset(args.datadir, split='train', downsample=args.downsample_train, is_stack=False)
+    train_dataset = dataset(args.datadir, split='train', downsample=args.downsample_train, is_stack=False, do_transform=(args.do_transform>0))
     test_dataset = dataset(args.datadir, split='test', downsample=args.downsample_train, is_stack=True)
     white_bg = train_dataset.white_bg
     near_far = train_dataset.near_far
@@ -201,6 +201,7 @@ def reconstruction(args):
                     shadingMode=args.shadingMode, alphaMask_thres=args.alpha_mask_thre, density_shift=args.density_shift, distance_scale=args.distance_scale,
                     pos_pe=args.pos_pe, view_pe=args.view_pe, fea_pe=args.fea_pe, featureC=args.featureC, step_ratio=args.step_ratio, fea2denseAct=args.fea2denseAct)
 
+    wandb.watch(tensorf)
 
     grad_vars = tensorf.get_optparam_groups(args.lr_init, args.lr_basis)
     if args.lr_decay_iters > 0:
@@ -235,9 +236,13 @@ def reconstruction(args):
     tvreg = TVLoss()
     print(f"initial TV_weight density: {TV_weight_density} appearance: {TV_weight_app}")
 
+    if args.sem_loss > 0:
+        print("using semantic loss")
+    
+    if args.do_transform > 0:
+        print("using data augmentation with symmetry")
 
     pbar = tqdm(range(args.n_iters), miniters=args.progress_refresh_rate, file=sys.stdout)
-    rgb_accumulator = []
     for iteration in pbar:
 
         ray_idx = trainingSampler.nextids()
@@ -275,12 +280,24 @@ def reconstruction(args):
         total_loss.backward()
         optimizer.step()
 
+        loss = loss.detach().item()
+        
+        PSNRs.append(-10.0 * np.log(loss) / np.log(10.0))
+        summary_writer.add_scalar('train/PSNR', PSNRs[-1], global_step=iteration)
+        summary_writer.add_scalar('train/mse', loss, global_step=iteration)
+
+        wandb.log({"train/PSNR": PSNRs[-1], 
+                   "train/mse": loss, 
+                   "train/total_loss": total_loss.detach().item()}, step=iteration)
+                  
         #Part 2: semantic loss
-        if iteration > 1000 and iteration % 100 == 0:
+        sem_loss = 0
+
+        if args.sem_loss > 0 and iteration > 1000 and iteration % 100 == 0:
             W, H = 64, 64
             rays_sample = sample_new_pose_rays(cam_angle_x=0.6911112070083618, c2w=random.choice(poses), h=H, w=W)
 
-            rgb_map_dev, alphas_map, depth_map, weights, uncertainty = renderer(rays_sample, tensorf, chunk=args.batch_size,
+            rgb_map_dev, _, _, _, _ = renderer(rays_sample, tensorf, chunk=args.batch_size,
                                     N_samples=-1, white_bg = white_bg, ndc_ray=ndc_ray, device=device, is_train=True)
 
 
@@ -308,13 +325,12 @@ def reconstruction(args):
             optimizer.zero_grad()
             sem_loss.backward()
             optimizer.step()
+            
+            sem_loss = sem_loss.detach().item()
+            summary_writer.add_scalar('train/sem_loss', sem_loss, global_step=iteration)
 
-        loss = loss.detach().item()
+            wandb.log({"train/sem_loss": sem_loss}, step=iteration)
         
-        PSNRs.append(-10.0 * np.log(loss) / np.log(10.0))
-        summary_writer.add_scalar('train/PSNR', PSNRs[-1], global_step=iteration)
-        summary_writer.add_scalar('train/mse', loss, global_step=iteration)
-
 
         for param_group in optimizer.param_groups:
             param_group['lr'] = param_group['lr'] * lr_factor
@@ -326,6 +342,7 @@ def reconstruction(args):
                 + f' train_psnr = {float(np.mean(PSNRs)):.2f}'
                 + f' test_psnr = {float(np.mean(PSNRs_test)):.2f}'
                 + f' mse = {loss:.6f}'
+                + f' sem_loss = {sem_loss:.6f}'
             )
             PSNRs = []
 
@@ -401,9 +418,12 @@ if __name__ == '__main__':
     torch.set_default_dtype(torch.float32)
     torch.manual_seed(20211202)
     np.random.seed(20211202)
+    random.seed(20211202)
 
     args = config_parser()
     print(args)
+
+    wandb.init(project='de-tensorf', entity='de-tensorf', name=args.expname, config=args)
 
     if  args.export_mesh:
         export_mesh(args)

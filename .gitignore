@@ -1,3 +1,9 @@
-/__pycache__
+__pycache__
 /data
 /log
+*/__pycache__
+.vscode
+wandb
+dataLoader/__pycache__
+models/__pycache__
+

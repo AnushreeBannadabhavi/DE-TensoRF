@@ -38,13 +38,14 @@ def get_symmetric_pose(pose):
     return pose
 
 class BlenderDataset(Dataset):
-    def __init__(self, datadir, split='train', downsample=1.0, is_stack=False, N_vis=-1):
+    def __init__(self, datadir, split='train', downsample=1.0, is_stack=False, N_vis=-1, do_transform=False):
 
         self.N_vis = N_vis
         self.root_dir = datadir
         self.split = split
         self.is_stack = is_stack
         self.img_wh = (int(800/downsample),int(800/downsample))
+        self.do_transform=do_transform
         self.define_transforms()
 
         self.scene_bbox = torch.tensor([[-1.5, -1.5, -1.5], [1.5, 1.5, 1.5]])
@@ -97,7 +98,7 @@ class BlenderDataset(Dataset):
         for i in tqdm(idxs, desc=f'Loading data {self.split} ({len(idxs)})'):#img_list:#
 
             frame = self.meta['frames'][i]
-            if self.split == 'train':
+            if self.do_transform and self.split == 'train':
                 pose_blender = np.array(frame['transform_matrix'])
                 pose_symm = get_symmetric_pose(pose_blender)
                 pose = pose_symm @ self.blender2opencv

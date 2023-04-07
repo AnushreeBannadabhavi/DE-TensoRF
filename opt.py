@@ -28,7 +28,7 @@ def config_parser(cmd=None):
 
     parser.add_argument('--dataset_name', type=str, default='blender',
                         choices=['blender', 'llff', 'nsvf', 'dtu','tankstemple', 'own_data'])
-
+    parser.add_argument('--do_transform', type=int, default=0)
 
     # training options
     # learning rate
@@ -54,6 +54,8 @@ def config_parser(cmd=None):
                         help='loss weight')
     parser.add_argument("--TV_weight_app", type=float, default=0.0,
                         help='loss weight')
+    parser.add_argument("--sem_loss", type=int, default=0,
+                        help='whether to use semantic loss')
     
     # model
     # volume options
