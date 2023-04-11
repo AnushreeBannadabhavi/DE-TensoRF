@@ -84,8 +84,8 @@ class SimpleSamplerPerImage:
 
 def sample_new_pose_rays(cam_angle_x, c2w, h, w):
 
-    focal = 0.5 * 64 / np.tan(0.5 * cam_angle_x)  # original focal length
-    focal *= 64 / 64  # modify focal length to match size self.img_wh
+    focal = 0.5 * h / np.tan(0.5 * cam_angle_x)  # original focal length
+    focal *= h / w  # modify focal length to match size self.img_wh
 
     # c2w = torch.tensor([[-0.5147, -0.4223,  0.7462, -3.0080],
     #     [-0.8574,  0.2535, -0.4479,  1.8057],
@@ -299,7 +299,7 @@ def reconstruction(args):
 
         if args.sem_loss > 0 and iteration >= args.sem_iteration and iteration % args.sem_freq == 0:
             
-            W, H = 224, 224
+            W, H = 128, 128
 
             rays_sample = sample_new_pose_rays(cam_angle_x=0.6911112070083618, c2w=random.choice(poses), h=H, w=W)
 
