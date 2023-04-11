@@ -82,6 +82,38 @@ class MLPRender_Fea(torch.nn.Module):
         rgb = torch.sigmoid(rgb)
 
         return rgb
+    
+class MLPRender_Fea_Cond(torch.nn.Module):
+    def __init__(self,inChanel, viewpe=6, feape=6, featureC=128, featureI=512, feaI=32):
+        super(MLPRender_Fea_Cond, self).__init__()
+
+        self.layer_img_emb = torch.nn.Linear(featureI, feaI)
+
+        self.in_mlpC = 2*viewpe*3 + 2*feape*inChanel + 3 + inChanel + feaI
+        self.viewpe = viewpe
+        self.feape = feape
+
+        layer1 = torch.nn.Linear(self.in_mlpC, featureC)
+        layer2 = torch.nn.Linear(featureC, featureC)
+        layer3 = torch.nn.Linear(featureC,3)
+
+        self.mlp = torch.nn.Sequential(layer1, torch.nn.ReLU(inplace=True), layer2, torch.nn.ReLU(inplace=True), layer3)
+        torch.nn.init.constant_(self.mlp[-1].bias, 0)
+
+    def forward(self, pts, viewdirs, features, img_emb):
+        
+        img_emb_compressed = self.layer_img_emb(img_emb).repeat(features.shape[0],1)
+
+        indata = [features, viewdirs, img_emb_compressed]
+        if self.feape > 0:
+            indata += [positional_encoding(features, self.feape)]
+        if self.viewpe > 0:
+            indata += [positional_encoding(viewdirs, self.viewpe)]
+        mlp_in = torch.cat(indata, dim=-1)
+        rgb = self.mlp(mlp_in)
+        rgb = torch.sigmoid(rgb)
+
+        return rgb
 
 class MLPRender_PE(torch.nn.Module):
     def __init__(self,inChanel, viewpe=6, pospe=6, featureC=128):
@@ -115,7 +147,7 @@ class MLPRender(torch.nn.Module):
 
         self.in_mlpC = (3+2*viewpe*3) + inChanel
         self.viewpe = viewpe
-        
+
         layer1 = torch.nn.Linear(self.in_mlpC, featureC)
         layer2 = torch.nn.Linear(featureC, featureC)
         layer3 = torch.nn.Linear(featureC,3)
@@ -177,6 +209,8 @@ class TensorBase(torch.nn.Module):
             self.renderModule = MLPRender_PE(self.app_dim, view_pe, pos_pe, featureC).to(device)
         elif shadingMode == 'MLP_Fea':
             self.renderModule = MLPRender_Fea(self.app_dim, view_pe, fea_pe, featureC).to(device)
+        elif shadingMode == 'MLP_Fea_Cond':
+            self.renderModule = MLPRender_Fea_Cond(self.app_dim, view_pe, fea_pe, featureC).to(device)
         elif shadingMode == 'MLP':
             self.renderModule = MLPRender(self.app_dim, view_pe, featureC).to(device)
         elif shadingMode == 'SH':
@@ -406,7 +440,7 @@ class TensorBase(torch.nn.Module):
         return alpha
 
 
-    def forward(self, rays_chunk, white_bg=True, is_train=False, ndc_ray=False, N_samples=-1):
+    def forward(self, rays_chunk, img_features, white_bg=True, is_train=False, ndc_ray=False, N_samples=-1):
 
         # sample points
         viewdirs = rays_chunk[:, 3:6]
@@ -446,7 +480,10 @@ class TensorBase(torch.nn.Module):
 
         if app_mask.any():
             app_features = self.compute_appfeature(xyz_sampled[app_mask])
-            valid_rgbs = self.renderModule(xyz_sampled[app_mask], viewdirs[app_mask], app_features)
+            if img_features is not None:
+                valid_rgbs = self.renderModule(xyz_sampled[app_mask], viewdirs[app_mask], app_features, img_features)
+            else:
+                valid_rgbs = self.renderModule(xyz_sampled[app_mask], viewdirs[app_mask], app_features)
             rgb[app_mask] = valid_rgbs
 
         acc_map = torch.sum(weight, -1)

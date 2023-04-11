@@ -29,6 +29,7 @@ def config_parser(cmd=None):
     parser.add_argument('--dataset_name', type=str, default='blender',
                         choices=['blender', 'llff', 'nsvf', 'dtu','tankstemple', 'own_data'])
     parser.add_argument('--do_transform', type=int, default=0)
+    parser.add_argument('--do_condition', type=int, default=0)
 
     # training options
     # learning rate
@@ -56,6 +57,10 @@ def config_parser(cmd=None):
                         help='loss weight')
     parser.add_argument("--sem_loss", type=int, default=0,
                         help='whether to use semantic loss')
+    parser.add_argument("--sem_iteration", type=int, default=1000,
+                        help='when to start using semantic loss')
+    parser.add_argument("--sem_freq", type=int, default=100,
+                        help='frequency of semantic loss')
     
     # model
     # volume options

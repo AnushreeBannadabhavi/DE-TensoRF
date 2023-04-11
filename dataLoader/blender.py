@@ -73,13 +73,7 @@ class BlenderDataset(Dataset):
         self.focal = 0.5 * 800 / np.tan(0.5 * self.meta['camera_angle_x'])  # original focal length
         self.focal *= self.img_wh[0] / 800  # modify focal length to match size self.img_wh
 
-        # random sample a subset of images
-        #subset_len = 30
-        #self.meta['frames'] = random.sample(self.meta['frames'], subset_len)
-        #self.meta['frames'] = self.meta['frames'][:subset_len]
-
-
-        # ray directions for all pixels, same for all images (same H, W, focal) # TODO: why is this the same for all images?
+        # ray directions for all pixels, same for all images (same H, W, focal) 
         self.directions = get_ray_directions(h, w, [self.focal,self.focal])  # (h, w, 3)
         self.directions = self.directions / torch.norm(self.directions, dim=-1, keepdim=True)
         self.intrinsics = torch.tensor([[self.focal,0,w/2],[0,self.focal,h/2],[0,0,1]]).float()

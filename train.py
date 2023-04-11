@@ -252,8 +252,13 @@ def reconstruction(args):
         ray_idx = trainingSampler.nextids()
         rays_train, rgb_train = allrays[ray_idx], allrgbs[ray_idx].to(device)
 
+        sampled_image_feature = None
+        if args.do_condition > 0:
+            sampled_image_feature = random.choice(allimgfeatures)
+            sampled_image_feature = sampled_image_feature.to(device).to(rays_train.dtype)
+
         #Part 1: normal MSE loss
-        rgb_map, alphas_map, depth_map, weights, uncertainty = renderer(rays_train, tensorf, chunk=args.batch_size,
+        rgb_map, alphas_map, depth_map, weights, uncertainty = renderer(rays_train, sampled_image_feature, tensorf, chunk=args.batch_size,
                                 N_samples=nSamples, white_bg = white_bg, ndc_ray=ndc_ray, device=device, is_train=True)
 
         loss = torch.mean((rgb_map - rgb_train) ** 2)
@@ -359,10 +364,9 @@ def reconstruction(args):
             )
             PSNRs = []
 
-
         if iteration % args.vis_every == args.vis_every - 1 and args.N_vis!=0:
-            PSNRs_test = evaluation(test_dataset,tensorf, args, renderer, f'{logfolder}/imgs_vis/', N_vis=args.N_vis,
-                                    prtx=f'{iteration:06d}_', N_samples=nSamples, white_bg = white_bg, ndc_ray=ndc_ray, compute_extra_metrics=False)
+            PSNRs_test = evaluation(test_dataset, tensorf, args, renderer, f'{logfolder}/imgs_vis/', N_vis=args.N_vis,
+                                    prtx=f'{iteration:06d}_', N_samples=nSamples, white_bg = white_bg, ndc_ray=ndc_ray, compute_extra_metrics=False, allimgfeatures=allimgfeatures)
             summary_writer.add_scalar('test/psnr', np.mean(PSNRs_test), global_step=iteration)
 
 
@@ -401,6 +405,8 @@ def reconstruction(args):
         
     end_time = time.time()
     print(f'======> {args.expname} training time: {end_time - start_time} <========================')
+    with open(f'{logfolder}/train_time.txt', 'w') as f:
+        f.write(f'{end_time - start_time}')
 
     tensorf.save(f'{logfolder}/{args.expname}.th')
 
@@ -409,13 +415,13 @@ def reconstruction(args):
         os.makedirs(f'{logfolder}/imgs_train_all', exist_ok=True)
         train_dataset = dataset(args.datadir, split='train', downsample=args.downsample_train, is_stack=True)
         PSNRs_test = evaluation(train_dataset,tensorf, args, renderer, f'{logfolder}/imgs_train_all/',
-                                N_vis=-1, N_samples=-1, white_bg = white_bg, ndc_ray=ndc_ray,device=device)
+                                N_vis=-1, N_samples=-1, white_bg = white_bg, ndc_ray=ndc_ray,device=device, allimgfeatures=allimgfeatures)
         print(f'======> {args.expname} test all psnr: {np.mean(PSNRs_test)} <========================')
 
     if args.render_test:
         os.makedirs(f'{logfolder}/imgs_test_all', exist_ok=True)
         PSNRs_test = evaluation(test_dataset,tensorf, args, renderer, f'{logfolder}/imgs_test_all/',
-                                N_vis=-1, N_samples=-1, white_bg = white_bg, ndc_ray=ndc_ray,device=device)
+                                N_vis=-1, N_samples=-1, white_bg = white_bg, ndc_ray=ndc_ray,device=device, allimgfeatures=allimgfeatures)
         summary_writer.add_scalar('test/psnr_all', np.mean(PSNRs_test), global_step=iteration)
         print(f'======> {args.expname} test all psnr: {np.mean(PSNRs_test)} <========================')
 
@@ -440,6 +446,7 @@ if __name__ == '__main__':
     args = config_parser()
     print(args)
 
+    #testing_mode = mode="disabled"
     wandb.init(project='de-tensorf', entity='de-tensorf', name=args.expname, config=args)
 
     if  args.export_mesh:
