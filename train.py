@@ -4,7 +4,7 @@ from tqdm.auto import tqdm
 from dataLoader.ray_utils import get_ray_directions, get_rays
 from opt import config_parser
 import wandb
-
+import time
 
 import json, random
 from renderer import *
@@ -213,6 +213,8 @@ def reconstruction(args):
     print("lr decay", args.lr_decay_target_ratio, args.lr_decay_iters)
     
     optimizer = torch.optim.Adam(grad_vars, betas=(0.9,0.99))
+    # sem_optimizer = torch.optim.Adam(grad_vars)
+    # scaler = torch.cuda.amp.GradScaler()
 
 
     #linear in logrithmic space
@@ -222,7 +224,8 @@ def reconstruction(args):
     torch.cuda.empty_cache()
     PSNRs,PSNRs_test = [],[0]
 
-    allrays, allrgbs, allimgfeatures, poses = train_dataset.all_rays, train_dataset.all_rgbs, train_dataset.all_img_features, train_dataset.poses
+    allrays, allrgbs, allimgfeatures = train_dataset.all_rays, train_dataset.all_rgbs, train_dataset.all_img_features
+    poses = test_dataset.poses
     if not args.ndc_ray:
         allrays, allrgbs = tensorf.filtering_rays(allrays, allrgbs, bbox_only=True)
     trainingSampler = SimpleSampler(allrays.shape[0], args.batch_size)
@@ -242,6 +245,7 @@ def reconstruction(args):
     if args.do_transform > 0:
         print("using data augmentation with symmetry")
 
+    start_time = time.time()
     pbar = tqdm(range(args.n_iters), miniters=args.progress_refresh_rate, file=sys.stdout)
     for iteration in pbar:
 
@@ -255,7 +259,7 @@ def reconstruction(args):
         loss = torch.mean((rgb_map - rgb_train) ** 2)
 
         # loss
-        total_loss = loss #+cos_dist_loss
+        total_loss = loss
         if Ortho_reg_weight > 0:
             loss_reg = tensorf.vector_comp_diffs()
             total_loss += Ortho_reg_weight*loss_reg
@@ -293,12 +297,14 @@ def reconstruction(args):
         #Part 2: semantic loss
         sem_loss = 0
 
-        if args.sem_loss > 0 and iteration > 1000 and iteration % 100 == 0:
-            W, H = 64, 64
+        if args.sem_loss > 0 and iteration >= args.sem_iteration and iteration % args.sem_freq == 0:
+            
+            W, H = 224, 224
+
             rays_sample = sample_new_pose_rays(cam_angle_x=0.6911112070083618, c2w=random.choice(poses), h=H, w=W)
 
             rgb_map_dev, _, _, _, _ = renderer(rays_sample, tensorf, chunk=args.batch_size,
-                                    N_samples=-1, white_bg = white_bg, ndc_ray=ndc_ray, device=device, is_train=True)
+                                N_samples=-1, white_bg = white_bg, ndc_ray=ndc_ray, device=device, is_train=True)
 
 
             rgb_map_dev = rgb_map_dev.clamp(0.0, 1.0)
@@ -317,6 +323,8 @@ def reconstruction(args):
             cos_dist = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
             sem_loss = -cos_dist(image_features, sampled_image_feature)
 
+            sem_loss = 0.05 * sem_loss
+
             # Save intermediate results for reference
             rgb_map_dev = rgb_map_dev.clone().detach().cpu()
             rgb_map_dev = (rgb_map_dev.numpy() * 255).astype('uint8')
@@ -326,6 +334,11 @@ def reconstruction(args):
             sem_loss.backward()
             optimizer.step()
             
+            # sem_optimizer.zero_grad()
+            # scaler.scale(sem_loss).backward()
+            # scaler.step(sem_optimizer)
+            # scaler.update()
+
             sem_loss = sem_loss.detach().item()
             summary_writer.add_scalar('train/sem_loss', sem_loss, global_step=iteration)
 
@@ -386,6 +399,8 @@ def reconstruction(args):
             grad_vars = tensorf.get_optparam_groups(args.lr_init*lr_scale, args.lr_basis*lr_scale)
             optimizer = torch.optim.Adam(grad_vars, betas=(0.9, 0.99))
         
+    end_time = time.time()
+    print(f'======> {args.expname} training time: {end_time - start_time} <========================')
 
     tensorf.save(f'{logfolder}/{args.expname}.th')
 
@@ -419,6 +434,8 @@ if __name__ == '__main__':
     torch.manual_seed(20211202)
     np.random.seed(20211202)
     random.seed(20211202)
+
+    torch.hub.set_dir('./torch/hub')
 
     args = config_parser()
     print(args)
