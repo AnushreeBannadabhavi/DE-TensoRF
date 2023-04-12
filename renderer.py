@@ -28,6 +28,7 @@ def evaluation(test_dataset,tensorf, args, renderer, savePath=None, N_vis=5, prt
     ssims,l_alex,l_vgg=[],[],[]
     os.makedirs(savePath, exist_ok=True)
     os.makedirs(savePath+"/rgbd", exist_ok=True)
+    os.makedirs(savePath+"/rgb", exist_ok=True)
 
     try:
         tqdm._instances.clear()
@@ -73,7 +74,7 @@ def evaluation(test_dataset,tensorf, args, renderer, savePath=None, N_vis=5, prt
         rgb_maps.append(rgb_map)
         depth_maps.append(depth_map)
         if savePath is not None:
-            imageio.imwrite(f'{savePath}/{prtx}{idx:03d}.png', rgb_map)
+            imageio.imwrite(f'{savePath}/rgb/{prtx}{idx:03d}.png', rgb_map)
             rgb_map = np.concatenate((rgb_map, depth_map), axis=1)
             imageio.imwrite(f'{savePath}/rgbd/{prtx}{idx:03d}.png', rgb_map)
 

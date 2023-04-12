@@ -6,4 +6,5 @@ __pycache__
 wandb
 dataLoader/__pycache__
 models/__pycache__
-
+/log-archive
+/testimg

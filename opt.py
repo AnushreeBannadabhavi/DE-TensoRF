@@ -61,6 +61,8 @@ def config_parser(cmd=None):
                         help='when to start using semantic loss')
     parser.add_argument("--sem_freq", type=int, default=100,
                         help='frequency of semantic loss')
+    parser.add_argument("--sem_weight", type=float, default=0.1,
+                        help='weight of semantic loss')
     
     # model
     # volume options

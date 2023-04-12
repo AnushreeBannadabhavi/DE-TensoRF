@@ -285,30 +285,23 @@ def reconstruction(args):
             total_loss = total_loss + loss_tv
             summary_writer.add_scalar('train/reg_tv_app', loss_tv.detach().item(), global_step=iteration)
 
-        optimizer.zero_grad()
-        total_loss.backward()
-        optimizer.step()
-
-        loss = loss.detach().item()
-        
-        PSNRs.append(-10.0 * np.log(loss) / np.log(10.0))
+        loss_copy = loss.detach().item()
+        PSNRs.append(-10.0 * np.log(loss_copy) / np.log(10.0))
         summary_writer.add_scalar('train/PSNR', PSNRs[-1], global_step=iteration)
-        summary_writer.add_scalar('train/mse', loss, global_step=iteration)
+        summary_writer.add_scalar('train/mse', loss_copy, global_step=iteration)
 
         wandb.log({"train/PSNR": PSNRs[-1], 
-                   "train/mse": loss, 
-                   "train/total_loss": total_loss.detach().item()}, step=iteration)
+                   "train/mse": loss}, step=iteration)
                   
         #Part 2: semantic loss
         sem_loss = 0
-
         if args.sem_loss > 0 and iteration >= args.sem_iteration and iteration % args.sem_freq == 0:
             
-            W, H = 128, 128
+            W, H = 64, 64
 
             rays_sample = sample_new_pose_rays(cam_angle_x=0.6911112070083618, c2w=random.choice(poses), h=H, w=W)
 
-            rgb_map_dev, _, _, _, _ = renderer(rays_sample, tensorf, chunk=args.batch_size,
+            rgb_map_dev, _, _, _, _ = renderer(rays_sample, sampled_image_feature, tensorf, chunk=args.batch_size,
                                 N_samples=-1, white_bg = white_bg, ndc_ray=ndc_ray, device=device, is_train=True)
 
 
@@ -328,16 +321,17 @@ def reconstruction(args):
             cos_dist = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
             sem_loss = -cos_dist(image_features, sampled_image_feature)
 
-            sem_loss = 0.05 * sem_loss
+            sem_loss = args.sem_weight * sem_loss
+            total_loss += sem_loss[0]
 
             # Save intermediate results for reference
-            rgb_map_dev = rgb_map_dev.clone().detach().cpu()
-            rgb_map_dev = (rgb_map_dev.numpy() * 255).astype('uint8')
-            imageio.imwrite(f'test.png', rgb_map_dev)
+            # rgb_map_dev = rgb_map_dev.clone().detach().cpu()
+            # rgb_map_dev = (rgb_map_dev.numpy() * 255).astype('uint8')
+            # imageio.imwrite(f'test.png', rgb_map_dev)
 
-            optimizer.zero_grad()
-            sem_loss.backward()
-            optimizer.step()
+            # optimizer.zero_grad()
+            # sem_loss.backward()
+            # optimizer.step()
             
             # sem_optimizer.zero_grad()
             # scaler.scale(sem_loss).backward()
@@ -348,7 +342,12 @@ def reconstruction(args):
             summary_writer.add_scalar('train/sem_loss', sem_loss, global_step=iteration)
 
             wandb.log({"train/sem_loss": sem_loss}, step=iteration)
-        
+
+        optimizer.zero_grad()
+        total_loss.backward()
+        optimizer.step()
+
+        wandb.log({"train/total_loss": total_loss.detach().item()}, step=iteration)
 
         for param_group in optimizer.param_groups:
             param_group['lr'] = param_group['lr'] * lr_factor
