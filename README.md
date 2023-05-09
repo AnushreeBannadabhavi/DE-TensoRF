@@ -1,10 +1,10 @@
 # DE-TensoRF
 
-DE-TensoRF - a data-efficient implementation of [TensoRF] (https://apchenstu.github.io/TensoRF/). This is a course project for [CPSC533R: Computer Graphics and Computer Vision](https://www.cs.ubc.ca/~rhodin/2022_2023_CPSC_533R/).
+DE-TensoRF - a data-efficient implementation of [TensoRF](https://apchenstu.github.io/TensoRF/). This is a course project for [CPSC533R: Computer Graphics and Computer Vision](https://www.cs.ubc.ca/~rhodin/2022_2023_CPSC_533R/).
 
 Proposed three techniques to achieve data-efficiency: symmetry, semantic conditioning, and semantic loss. Detailed report can be found [here](report.pdf)
 
-This work is based on [TensoRF] (https://apchenstu.github.io/TensoRF/). The original code can be found [here](https://github.com/apchenstu/TensoRF).
+This work is based on [TensoRF](https://apchenstu.github.io/TensoRF/). The original code can be found [here](https://github.com/apchenstu/TensoRF).
 
 ## Installation
 
@@ -19,7 +19,7 @@ pip install tqdm scikit-image opencv-python configargparse lpips imageio-ffmpeg 
 ```
 
 
-## Dataset
+## Datasets
 * [Synthetic-NeRF](https://drive.google.com/drive/folders/128yBriW1IG_3NJ5Rp7APSTZsJqdJdfc1) 
 * [Synthetic-NSVF](https://dl.fbaipublicfiles.com/nsvf/dataset/Synthetic_NSVF.zip)
 * [Tanks&Temples](https://dl.fbaipublicfiles.com/nsvf/dataset/TanksAndTemple.zip)
