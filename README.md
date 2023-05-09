@@ -2,7 +2,12 @@
 
 DE-TensoRF - a data-efficient implementation of [TensoRF](https://apchenstu.github.io/TensoRF/). This is a course project for [CPSC533R: Computer Graphics and Computer Vision](https://www.cs.ubc.ca/~rhodin/2022_2023_CPSC_533R/).
 
-Proposed three techniques to achieve data-efficiency: symmetry, semantic conditioning, and semantic loss. Detailed report can be found [here](report.pdf)
+Proposed three techniques to achieve data-efficiency: 
+-  Obtain unseen views using symmetry
+-  Semantic conditioning
+-  Semantic loss
+
+Detailed report can be found [here](report.pdf)
 
 This work is based on [TensoRF](https://apchenstu.github.io/TensoRF/). The original code can be found [here](https://github.com/apchenstu/TensoRF).
 
